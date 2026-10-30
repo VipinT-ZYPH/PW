@@ -7,15 +7,15 @@ import {
   Store, Users, X
 } from 'lucide-react'
 import styles from './page.module.css'
+import { apiRequest } from '../lib/api'
+import { clampPercentage, formatEventDate, money } from '../lib/utils'
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 type View = 'Overview' | 'Budget' | 'Tasks' | 'Vendors'
 type Event = { id: number; name: string; event_type: string; city: string; event_date?: string; guests: number; budget: number }
 type BudgetItem = { id: number; category: string; planned: number; actual: number }
 type Task = { id: number; title: string; due_date?: string; completed: boolean; priority: string }
 type Summary = { event: Event; budget_items: BudgetItem[]; tasks: Task[]; spent: number; planned: number; task_completion: number }
 type Vendor = { id: number; name: string; category: string; city: string; rating: number; price_band: string; description: string }
-const money = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`
 
 export default function Home() {
   const [events, setEvents] = useState<Event[]>([])
@@ -45,17 +45,13 @@ export default function Home() {
   }, [])
 
   const selectEvent = useCallback(async (id: number) => {
-    const response = await fetch(`${API}/api/events/${id}/summary`)
-    if (!response.ok) throw new Error('Unable to load event')
-    setSummary(await response.json())
+    setSummary(await apiRequest<Summary>(`/api/events/${id}/summary`))
     setAnswer('')
   }, [])
 
   const loadEvents = useCallback(async () => {
     try {
-      const response = await fetch(`${API}/api/events`)
-      if (!response.ok) throw new Error('Unable to load events')
-      const data: Event[] = await response.json()
+      const data = await apiRequest<Event[]>('/api/events')
       setEvents(data)
       if (data[0]) await selectEvent(data[0].id)
     } catch { setNotice('Could not connect to the backend. Start FastAPI on port 8000.') }
@@ -64,18 +60,18 @@ export default function Home() {
   useEffect(() => {
     setTodayLabel(new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date()).toUpperCase())
     void loadEvents()
-    fetch(`${API}/api/vendors`).then(r => r.json()).then(setVendors).catch(() => setNotice('Could not load vendors. Is the backend running?'))
+    void apiRequest<Vendor[]>('/api/vendors')
+      .then(setVendors)
+      .catch(() => setNotice('Could not load vendors. Is the backend running?'))
   }, [loadEvents])
 
   const createEvent = async (e: FormEvent) => {
     e.preventDefault()
     try {
-      const response = await fetch(`${API}/api/events`, {
+      const created = await apiRequest<Event>('/api/events', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, guests: Number(form.guests), budget: Number(form.budget), event_date: form.event_date || null })
       })
-      if (!response.ok) throw new Error('Event could not be created')
-      const created: Event = await response.json()
       setEvents(current => [created, ...current])
       await selectEvent(created.id)
       setShowCreate(false)
@@ -85,48 +81,50 @@ export default function Home() {
 
   const updateTask = async (task: Task) => {
     if (!summary) return
-    const response = await fetch(`${API}/api/tasks/${task.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ completed: !task.completed })
-    })
-    if (!response.ok) { setNotice('Task could not be updated.'); return }
-    await selectEvent(summary.event.id)
+    try {
+      await apiRequest(`/api/tasks/${task.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed: !task.completed })
+      })
+      await selectEvent(summary.event.id)
+    } catch { setNotice('Task could not be updated.') }
   }
 
   const addBudgetItem = async (e: FormEvent) => {
     e.preventDefault()
     if (!summary) return
-    const response = await fetch(`${API}/api/events/${summary.event.id}/budget`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category: budgetForm.category, planned: Number(budgetForm.planned), actual: 0 })
-    })
-    if (!response.ok) { setNotice('Budget item could not be added.'); return }
-    setBudgetForm({ category: '', planned: '' })
-    await selectEvent(summary.event.id)
+    try {
+      await apiRequest(`/api/events/${summary.event.id}/budget`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: budgetForm.category.trim(), planned: Number(budgetForm.planned), actual: 0 })
+      })
+      setBudgetForm({ category: '', planned: '' })
+      await selectEvent(summary.event.id)
+    } catch { setNotice('Budget item could not be added.') }
   }
 
   const addTask = async (e: FormEvent) => {
     e.preventDefault()
     if (!summary || !taskTitle.trim()) return
-    const response = await fetch(`${API}/api/events/${summary.event.id}/tasks`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: taskTitle.trim(), priority: 'medium' })
-    })
-    if (!response.ok) { setNotice('Task could not be added.'); return }
-    setTaskTitle('')
-    await selectEvent(summary.event.id)
+    try {
+      await apiRequest(`/api/events/${summary.event.id}/tasks`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: taskTitle.trim(), priority: 'medium' })
+      })
+      setTaskTitle('')
+      await selectEvent(summary.event.id)
+    } catch { setNotice('Task could not be added.') }
   }
 
   const askAI = async () => {
     if (!summary || !question.trim()) return
     setLoading(true)
     try {
-      const response = await fetch(`${API}/api/events/${summary.event.id}/plan`, {
+      const data = await apiRequest<{ answer: string }>(`/api/events/${summary.event.id}/plan`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question })
       })
-      if (!response.ok) throw new Error()
-      setAnswer((await response.json()).answer)
+      setAnswer(data.answer)
     } catch { setNotice('The planning assistant is unavailable.') }
     finally { setLoading(false) }
   }
@@ -173,8 +171,8 @@ export default function Home() {
 }
 
 function Overview({ summary, remaining, dueSoon, onView, question, setQuestion, answer, askAI, loading, vendors }: { summary: Summary; remaining: number; dueSoon: Task[]; onView: (view: View) => void; question: string; setQuestion: (value: string) => void; answer: string; askAI: () => void; loading: boolean; vendors: Vendor[] }) {
-  return <><section className={styles.eventHero}><div><div className={styles.heroLabel}><span className={styles.liveDot} aria-hidden="true"/> ACTIVE EVENT</div><h2>{summary.event.name}</h2><p><CalendarDays size={16} aria-hidden="true"/> {summary.event.event_date ? new Date(summary.event.event_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Date to be confirmed'} <span aria-hidden="true">·</span><MapPin size={16} aria-hidden="true"/> {summary.event.city} <span aria-hidden="true">·</span><Users size={16} aria-hidden="true"/> {summary.event.guests} guests</p></div><button type="button" className={styles.linkButton} onClick={() => onView('Budget')}>View event <ArrowUpRight size={16} aria-hidden="true"/></button></section>
-    <div className={styles.stats}><div className={styles.statCard}><div className={styles.statTop}><span>Total budget</span><IndianRupee size={18} aria-hidden="true"/></div><strong>{money(summary.event.budget)}</strong><div className={styles.progress} role="progressbar" aria-label="Budget spent" aria-valuemin={0} aria-valuemax={summary.event.budget} aria-valuenow={summary.spent}><span style={{ width: `${Math.min((summary.spent / Math.max(summary.event.budget, 1)) * 100, 100)}%` }}/></div><small>{money(summary.spent)} spent <b aria-hidden="true">·</b> {money(remaining)} remaining</small></div><div className={styles.statCard}><div className={styles.statTop}><span>Tasks complete</span><Check size={18} aria-hidden="true"/></div><strong>{summary.task_completion}%</strong><small>{summary.tasks.filter(t => t.completed).length} of {summary.tasks.length} tasks done</small></div><div className={styles.statCard}><div className={styles.statTop}><span>Days to go</span><CalendarDays size={18} aria-hidden="true"/></div><strong>{summary.event.event_date ? Math.max(0, Math.ceil((new Date(summary.event.event_date).getTime() - Date.now()) / 86400000)) : '—'}</strong><small className={styles.muted}>Keep the momentum going</small></div></div>
+  return <><section className={styles.eventHero}><div><div className={styles.heroLabel}><span className={styles.liveDot} aria-hidden="true"/> ACTIVE EVENT</div><h2>{summary.event.name}</h2><p><CalendarDays size={16} aria-hidden="true"/> {formatEventDate(summary.event.event_date)} <span aria-hidden="true">·</span><MapPin size={16} aria-hidden="true"/> {summary.event.city} <span aria-hidden="true">·</span><Users size={16} aria-hidden="true"/> {summary.event.guests} guests</p></div><button type="button" className={styles.linkButton} onClick={() => onView('Budget')}>View event <ArrowUpRight size={16} aria-hidden="true"/></button></section>
+    <div className={styles.stats}><div className={styles.statCard}><div className={styles.statTop}><span>Total budget</span><IndianRupee size={18} aria-hidden="true"/></div><strong>{money(summary.event.budget)}</strong><div className={styles.progress} role="progressbar" aria-label="Budget spent" aria-valuemin={0} aria-valuemax={summary.event.budget} aria-valuenow={summary.spent}><span style={{ width: `${clampPercentage((summary.spent / Math.max(summary.event.budget, 1)) * 100)}%` }}/></div><small>{money(summary.spent)} spent <b aria-hidden="true">·</b> {money(remaining)} remaining</small></div><div className={styles.statCard}><div className={styles.statTop}><span>Tasks complete</span><Check size={18} aria-hidden="true"/></div><strong>{summary.task_completion}%</strong><small>{summary.tasks.filter(t => t.completed).length} of {summary.tasks.length} tasks done</small></div><div className={styles.statCard}><div className={styles.statTop}><span>Days to go</span><CalendarDays size={18} aria-hidden="true"/></div><strong>{summary.event.event_date ? Math.max(0, Math.ceil((new Date(summary.event.event_date).getTime() - Date.now()) / 86400000)) : '—'}</strong><small className={styles.muted}>Keep the momentum going</small></div></div>
     <section className={styles.grid}><div className={styles.card}><div className={styles.cardHeader}><div><h3>Upcoming tasks</h3><p>The next small steps that move everything forward.</p></div><button type="button" className={styles.textButton} onClick={() => onView('Tasks')}>View all <ArrowUpRight size={15} aria-hidden="true"/></button></div>{dueSoon.length ? dueSoon.map(t => <div className={styles.task} key={t.id}><div className={styles.checkbox} aria-hidden="true"/><div><strong>{t.title}</strong><small>{t.due_date ? `Due ${new Date(t.due_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}` : 'No due date'}</small></div><span className={`${styles.priority} ${styles[t.priority]}`}>{t.priority}</span></div>) : <p className={styles.muted}>You&apos;re all caught up.</p>}</div><div className={`${styles.card} ${styles.aiCard}`}><div className={styles.aiOrb} aria-hidden="true"><Sparkles size={20}/></div><h3>Your planning co-pilot</h3><p>Ask anything about your event and get a practical next step.</p><div className={styles.ask}><label className={styles.srOnly} htmlFor="ai-question">Ask your planning co-pilot</label><input id="ai-question" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && askAI()} placeholder="e.g. How should I split my budget?"/><button type="button" onClick={askAI} disabled={loading}>{loading ? 'Thinking…' : 'Ask'}</button></div>{answer && <div className={styles.answer} role="status">{answer}</div>}</div></section>
     <section className={styles.card}><div className={styles.cardHeader}><div><h3>Recommended vendors</h3><p>India-first partners, ready for your shortlist.</p></div><button type="button" className={styles.textButton} onClick={() => onView('Vendors')}>Browse directory <ArrowUpRight size={15} aria-hidden="true"/></button></div><VendorCards vendors={vendors.slice(0, 3)}/></section></>
 }
